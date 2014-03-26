@@ -5,51 +5,91 @@
 #define A2_PIN       7
 #define ADDR_EN_PIN  8 // Active low
 
+// SPI/Module Bus Definitions
+#define MOSI_PIN    11  // Master Out/Slave In
+#define MISO_PIN    12  // Master In/Slave out 
+#define SCK_PIN     13  // Clock
+#define SLOAD_PIN   10  // Serial Load (Inputs only)
+
+// External I/O Module Configuration
 #define BASE_INPUT_MODULE_ID   0
 #define MAX_INPUT_MODULES      4
 #define BASE_OUTPUT_MODULE_ID  4
 #define MAX_OUTPUT_MODULES     4
 #define MODULE_ID_NONE         0xFF
 
-#define IO_WIDTH  8 // Bits handled by each I/O module (so we can chain shift registers later, if we want to)
+#define SCANMODE_INPUT 0x01
+#define SCANMODE_OUTPUT 0x02
+#define SCANMODE_BOTH  (SCANMODE_INPUT | SCANMODE_OUTPUT)
+
+#define MODULE_IO_WIDTH  8 // Bits handled by each I/O module (so we can chain shift registers later, if we want to)
 
 #define MODID_TO_INDEX(type, id) ((type == INPUT) ? (id - BASE_INPUT_MODULE_ID) : (id - BASE_OUTPUT_MODULE_ID))
-
-// SPI Bus Definitions
-//#define SLOAD_PIN   10  // Shift register load/latch
-#define MOSI_PIN    11  // Master Out/Slave In
-#define MISO_PIN    12  // Master In/Slave out 
-#define SCK_PIN     13  // Clock
-#define SLOAD_PIN   10  // Serial Load (Inputs only)
+#define INDEX_TO_MODID(type, idx) ((type == INPUT) ? (idx + BASE_INPUT_MODULE_ID) : (idx + BASE_OUTPUT_MODULE_ID))
 
 // Global Variables
-byte g_DigitalInputStates[MAX_INPUT_MODULES];
-byte g_DigitalOutputStates[MAX_OUTPUT_MODULES];
+unsigned int g_DigitalInputStates[MAX_INPUT_MODULES];
+unsigned int g_DigitalOutputStates[MAX_OUTPUT_MODULES];
+
+// Forward Declarations
+unsigned int ScanIOBank(int bankIndex, unsigned int outputVal, byte scanMode = SCANMODE_BOTH);
+
+//#define DEBUG_MON // Enables serial port monitoring of input/output state changes
 
 // Utility Functions ///////////////////////
+#ifdef DEBUG_MON
+  #define PrintInputStates(b) _PrintInputStates(b)
+  #define PrintOutputStates(b) _PrintOutputStates(b)
+#else
+  #define PrintInputStates(b)
+  #define PrintOutputStates(b)
+#endif
 
-void PrintInputs(int moduleId)
+void _PrintInputStates(int bank)
 {
-  byte values = g_DigitalInputStates[MODID_TO_INDEX(INPUT, moduleId)];
-  Serial.print("Input States[");
-  Serial.print(moduleId);
+  unsigned int values = g_DigitalInputStates[bank];
+  Serial.print("Input States[bank ");
+  Serial.print(bank);
   Serial.print("]: ");
-  for(int i = 0; i < 8; i++)
+  for(int i = 0; i < MODULE_IO_WIDTH; i++)
   {
-      if((values >> i) & 1)
+      if((values >> ((MODULE_IO_WIDTH - 1) - i)) & 1)
           Serial.print("1 ");
       else
           Serial.print("0 ");
   }
+  Serial.print(" (");
+  Serial.print(values);
+  Serial.print(")");
 
+  Serial.print("\r\n");  
+}
+
+void _PrintOutputStates(int bank)
+{
+  unsigned int values = g_DigitalOutputStates[bank];
+  Serial.print("Output States[bank ");
+  Serial.print(bank);
+  Serial.print("]: ");
+  for(int i = 0; i < MODULE_IO_WIDTH; i++)
+  {
+      if((values >> ((MODULE_IO_WIDTH - 1) - i)) & 1)
+          Serial.print("1 ");
+      else
+          Serial.print("0 ");
+  }
+  Serial.print(" (");
+  Serial.print(values);
+  Serial.print(")");
+  
   Serial.print("\r\n");  
 }
 ///////////////////////////////////////////
 
 void setup() 
 {
-  Serial.begin(9600);
-
+  Serial.begin(9600);   
+    
 // Configure internal digital I/O pins
   // I/O Module Address Bus
   pinMode(A0_PIN, OUTPUT);
@@ -74,8 +114,10 @@ void setup()
   {
     for (int i = 0; i < 5; i++)
     {
-      SetOutputByte(5, 0x10 >> i);
-      SetOutputByte(4, 0x01 << i);
+      ScanIOBank(0, (0x10 >> i), SCANMODE_OUTPUT);
+      ScanIOBank(1, (0x01 << i), SCANMODE_OUTPUT);
+//      SetOutputByte(5, 0x10 >> i);
+//      SetOutputByte(4, 0x01 << i);
       delay(50);
     }
   }
@@ -88,9 +130,9 @@ void setup()
   // TODO: The state values have been initialized...just do an I/O scan...
   for (int i = 0; i < MAX_OUTPUT_MODULES; i++)
     SetOutputByte(MODID_TO_INDEX(OUTPUT,i),0);
-    
 }
 
+// I/O Module Handling ///////////////////////////////////////
 void SelectIOModule(int moduleId)
 {
     // Disable demux output
@@ -108,84 +150,76 @@ void SelectIOModule(int moduleId)
     }
 }
 
-void SetOutputByte(int moduleId, byte vals)
+// Writes outputVal to selected bank and returns input value from selected bank
+unsigned int ScanIOBank(int bankIndex, unsigned int outputVal, byte scanMode /*= SCANMODE_BOTH*/)
 {
-  // Take the latch/load pin low (the address bus is active LOW) so the output states don't change until we send all the data
-//  SelectIOModule(moduleId);
+  // Reset clock
+  digitalWrite(SCK_PIN, LOW);
 
-  // Shift out the data
-  shiftOut(MOSI_PIN, SCK_PIN, MSBFIRST, ~vals); // We have to invert this, since the output module is acvite LOW
-
-  // Pulse the latch/load pin to latch the last 8 bits shifted...
-  SelectIOModule(moduleId);
-  delayMicroseconds(5);  
-  SelectIOModule(MODULE_ID_NONE);
-}
-
-byte GetInputByte(int moduleId)
-{
-  // Latch the input states
-  digitalWrite(SLOAD_PIN, LOW);
-  // let the values latch in the shift register
-  delayMicroseconds(5);
-  // Reset latch pin (data has been captured)
-  digitalWrite(SLOAD_PIN, HIGH);
+  if (scanMode & SCANMODE_INPUT)
+  {
+    // Pulse the LOAD pin (inputs) to store input states
+    digitalWrite(SLOAD_PIN, LOW); // Copy input states into shift register
+    delayMicroseconds(5); // let the values settle in the shift register (TODO: Do we really need this? The datasheet says it only takes 15ns to load...)
+    digitalWrite(SLOAD_PIN, HIGH); // Reset latch pin (data has been captured)
+    SelectIOModule(INDEX_TO_MODID(INPUT, bankIndex)); // Take the input enable pin (Clock Inhibit) low (the address bus is active LOW) to enable shifting input states
+  }
   
-  // Take the enable pin(Clock Inhibit) low (the address bus is active LOW) to begin getting the input states
-  SelectIOModule(moduleId);
- 
-    /* Loop to read each bit value from the serial out line
-     * of the SN74HC165N.
-    */
-    byte bitVal;
-    unsigned int bytesVal = 0;
-    for(int i = 0; i < 8; i++)
+  unsigned int inputVal = 0;
+  for(int i = 0; i < MODULE_IO_WIDTH; i++) // Perform I/O for each bit in bank
+  {
+    if (scanMode & SCANMODE_INPUT)
     {
-        bitVal = digitalRead(MISO_PIN);
+      byte bitVal = digitalRead(MISO_PIN); // Read bit from serial input
+      inputVal |= (bitVal << ((MODULE_IO_WIDTH - 1) - i)); // Set the corresponding bit in value byte (MSB)
+    }
 
-        //Set the corresponding bit in value byte
-        bytesVal |= (bitVal << ((8-1) - i));
-
-        /* Pulse the Clock (rising edge shifts the next bit).
-        */
-        digitalWrite(SCK_PIN, HIGH);
-        delayMicroseconds(5);
-        digitalWrite(SCK_PIN, LOW);
+    if (scanMode & SCANMODE_OUTPUT)
+    {
+      digitalWrite(MOSI_PIN, ((outputVal >> ((MODULE_IO_WIDTH - 1) - i)) & 0x1) ? LOW : HIGH); // Invert bit (active LOW) and write to serial output
     }
     
- // Set the enable pin HIGH to stop retrieving data (sets all modules HIGH)
- SelectIOModule(MODULE_ID_NONE);
- 
- if (bytesVal != g_DigitalInputStates[MODID_TO_INDEX(INPUT, moduleId)])
- {
-   // TODO: Trigger OnChange Event...
-   g_DigitalInputStates[MODID_TO_INDEX(INPUT, moduleId)] = bytesVal; // Store new state
-   PrintInputs(moduleId);
- }
- 
- return bytesVal; 
+    // Pulse clock to advance shift registers
+    digitalWrite(SCK_PIN, HIGH);
+    delayMicroseconds(5); // TODO: Do we really need this? The datasheet says it only requires a 25ns pulse...
+    digitalWrite(SCK_PIN, LOW);
+  }
+  
+  if (scanMode & SCANMODE_INPUT)
+  {
+     // Reset (HIGH) the clock inhibit pin on input register to stop shifting
+     SelectIOModule(MODULE_ID_NONE);
+  }
+  
+  if (scanMode & SCANMODE_OUTPUT)
+  {
+     // Pulse the latch/load pin on output register to latch the last 8 bits shifted to the outputs...
+     SelectIOModule(INDEX_TO_MODID(OUTPUT, bankIndex)); // TODO: Can we just switch to the output module without going to NULL first?
+     delayMicroseconds(5); // TODO: Do we really need this? The datasheet says it only requires a 22ns pulse...
+     SelectIOModule(MODULE_ID_NONE);
+  }
+  
+ return inputVal;
 }
 
-void UpdateIO(int moduleId)
-{
-  // Latch input states
-  digitalWrite(SLOAD_PIN, LOW);
-  // let the values latch in the shift register
-  delayMicroseconds(5);
-  // Reset latch pin (data has been captured)
-  digitalWrite(SLOAD_PIN, HIGH);  
-}
+//////////////////////////////////////////////////////////////////////////////
 
 void loop() 
 {
-//  SetOutputByte(5, 0x55);
-//  
-//  for (int i = 0; i < 5; i++)
-//  {
-//    SetOutputByte(5, 0x10 >> i);
-//    SetOutputByte(4, 0x01 << i);
-//    GetInputByte(0);
-//    delay(500);
-//  }
-  SetOutputByte(4,GetInputByte(0) >> 1);
+  for (int bank = 0; bank < 2; bank++)
+  {
+    unsigned int inputVal = ScanIOBank(bank, g_DigitalOutputStates[bank]);
+  
+    if (g_DigitalInputStates[bank] != inputVal) // Detect change
+    {
+      g_DigitalInputStates[bank] = inputVal; // Store new state
+      PrintInputStates(bank);
+    }
+
+    if (g_DigitalOutputStates[bank] != g_DigitalInputStates[bank] >> 1) // Detect change
+    {
+      g_DigitalOutputStates[bank] = g_DigitalInputStates[bank] >> 1;  // Store new state
+      PrintOutputStates(bank);      
+    }
+  }
 }
