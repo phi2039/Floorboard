@@ -7,12 +7,7 @@
 #define A2_PIN       7
 #define ADDR_EN_PIN  8 // Active low
 
-// SPI/Module Bus Definitions
-// NOTE: This is just for SW SPI (delete when we feel OK with it)
-// #define MOSI_PIN    11  // Master Out/Slave In
-// #define MISO_PIN    12  // Master In/Slave out 
-// #define SCK_PIN     13  // Clock
-
+// I/O Control Definitions
 #define SLOAD_PIN   10  // Serial Load (Inputs only)
 
 // External I/O Module Configuration
@@ -100,22 +95,10 @@ void setup()
   pinMode(SLOAD_PIN, OUTPUT);
 
   // SPI Bus
-  // NOTE: This is just for SW SPI (delete when we feel OK with it)
-  // pinMode(SCK_PIN, OUTPUT);
-  // pinMode(MOSI_PIN, OUTPUT);
-  // pinMode(MISO_PIN, INPUT);
-
-SPI.setBitOrder(MSBFIRST);
-// CPOL = 0 (rising edge)
-// CPHA = 0 (first edge)
-SPI.setDataMode(SPI_MODE0);
-SPI.setClockDivider(SPI_CLOCK_DIV4); // System Clock / 4
-SPI.begin();
-
-// NOTE: This is just for SW SPI (delete when we feel OK with it)
-// Initialize SPI Bus (Outputs Only)
-  // digitalWrite(SCK_PIN, LOW);
-  // digitalWrite(MOSI_PIN, LOW);
+  SPI.setBitOrder(MSBFIRST);
+  SPI.setDataMode(SPI_MODE0); // POL = 0 (rising edge), CPHA = 0 (first edge)
+  SPI.setClockDivider(SPI_CLOCK_DIV4); // System Clock / 4
+  SPI.begin();
 
 // Initialize I/O Control
   digitalWrite(SLOAD_PIN, HIGH);
@@ -160,10 +143,6 @@ void SelectDigitalIOBank(int moduleId)
 // Scans one bank of digital I/O (one input, oue output). Writes outputVal to selected output module and returns input value from selected input module
 unsigned int ScanDigitalIOBank(int bankIndex, unsigned int outputVal)
 {
-// NOTE: This is just for SW SPI (delete when we feel OK with it)
-  // Reset clock
-//  digitalWrite(SCK_PIN, LOW);
-
   // Pulse the LOAD pin (inputs) to store input states in shift registers
   digitalWrite(SLOAD_PIN, LOW); // Copy input states into shift register
   delayMicroseconds(5); // let the values settle in the shift register (TODO: Do we really need this? The datasheet says it only takes 15ns to load...)
@@ -174,22 +153,9 @@ unsigned int ScanDigitalIOBank(int bankIndex, unsigned int outputVal)
 
   // TODO: Consider using SPI library (might not handle clocks correctly for both inputs and outputs...out of phase?)
   unsigned int inputVal = 0;
- 
+
+  // Read/Write I/O
   inputVal = SPI.transfer(~outputVal);
-
-  // NOTE: This is just for SW SPI (delete when we feel OK with it)
-  // for(int i = 0; i < MODULE_IO_WIDTH; i++) // Perform I/O for each bit in bank
-  // {
-
-  //   byte bitVal = digitalRead(MISO_PIN); // Read bit from serial input
-  //   inputVal |= (bitVal << ((MODULE_IO_WIDTH - 1) - i)); // Set the corresponding bit in value byte (MSB)
-  //   digitalWrite(MOSI_PIN, ((outputVal >> ((MODULE_IO_WIDTH - 1) - i)) & 0x1) ? LOW : HIGH); // Invert bit (active LOW) and write to serial output
-    
-  //   // Pulse clock to advance shift registers
-  //   digitalWrite(SCK_PIN, HIGH);
-  //   delayMicroseconds(5); // TODO: Do we really need this? The datasheet says it only requires a 25ns pulse...
-  //   digitalWrite(SCK_PIN, LOW);
-  // }
   
   // Reset BUS_ENABLE (stop shifting inputs) and STCP (latch outputs)
   SelectDigitalIOBank(BANK_NONE);
