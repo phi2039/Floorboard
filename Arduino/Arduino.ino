@@ -1,20 +1,23 @@
 
+#include <SPI.h>
+
 // Address Bus Definitions
-#define A0_PIN       5
-#define A1_PIN       6
+#define A0_PIN       2
+#define A1_PIN       4
 #define A2_PIN       7
-//#define A3_PIN       8 // Additional address bit to expand peripheral capabilities (e.g. LCD, more I/O, etc...)
-#define ADDR_EN_PIN  9 // Active low
+#define ADDR_EN_PIN  8 // Active low
 
 // SPI/Module Bus Definitions
-#define MOSI_PIN    11  // Master Out/Slave In
-#define MISO_PIN    12  // Master In/Slave out 
-#define SCK_PIN     13  // Clock
+// NOTE: This is just for SW SPI (delete when we feel OK with it)
+// #define MOSI_PIN    11  // Master Out/Slave In
+// #define MISO_PIN    12  // Master In/Slave out 
+// #define SCK_PIN     13  // Clock
+
 #define SLOAD_PIN   10  // Serial Load (Inputs only)
 
 // External I/O Module Configuration
 #define IO_BANK_COUNT          4
-#define BANK_IDX_NONE         0xFF
+#define BANK_NONE         0xFF
 
 // I/O Scanning
 #define MODULE_IO_WIDTH  8 // Number of bits handled by each I/O module (so we can chain shift registers later, if we want to, for a wider IO range)
@@ -83,7 +86,7 @@ void setup()
 #ifdef DEBUG_MON  
   Serial.begin(9600); // Text output
 #else
-  Serial.begin(115200); // USB MIDI (Hairless bridge)
+  Serial.begin(115200); // USB MIDI (Hairless Bridge)
 #endif
 
 // Configure internal digital I/O pins
@@ -93,15 +96,28 @@ void setup()
   pinMode(A2_PIN, OUTPUT);    
   pinMode(ADDR_EN_PIN, OUTPUT);
   
-  // SPI Bus
-  pinMode(SCK_PIN, OUTPUT);
-  pinMode(MOSI_PIN, OUTPUT);
-  pinMode(MISO_PIN, INPUT);
+  // I/O Control
   pinMode(SLOAD_PIN, OUTPUT);
-  
-// Initialize SPI Bus
-  digitalWrite(SCK_PIN, LOW);
-  digitalWrite(MOSI_PIN, LOW);
+
+  // SPI Bus
+  // NOTE: This is just for SW SPI (delete when we feel OK with it)
+  // pinMode(SCK_PIN, OUTPUT);
+  // pinMode(MOSI_PIN, OUTPUT);
+  // pinMode(MISO_PIN, INPUT);
+
+SPI.setBitOrder(MSBFIRST);
+// CPOL = 0 (rising edge)
+// CPHA = 0 (first edge)
+SPI.setDataMode(SPI_MODE0);
+SPI.setClockDivider(SPI_CLOCK_DIV4); // System Clock / 4
+SPI.begin();
+
+// NOTE: This is just for SW SPI (delete when we feel OK with it)
+// Initialize SPI Bus (Outputs Only)
+  // digitalWrite(SCK_PIN, LOW);
+  // digitalWrite(MOSI_PIN, LOW);
+
+// Initialize I/O Control
   digitalWrite(SLOAD_PIN, HIGH);
 
 // Do something fun with the LEDs during initialization (flash them in a spinning loop) :-) 
@@ -128,7 +144,7 @@ void SelectDigitalIOBank(int moduleId)
 {
     // Disable demux output
     digitalWrite(ADDR_EN_PIN, HIGH);
-    if (moduleId != BANK_IDX_NONE) // If BANK_IDX_NONE is specified, disable all modules
+    if (moduleId != BANK_NONE) // If BANK_IDX_NONE is specified, disable all modules
     {
       // Write address bits
       // TODO: Is there a function to write all these at once?
@@ -144,8 +160,9 @@ void SelectDigitalIOBank(int moduleId)
 // Scans one bank of digital I/O (one input, oue output). Writes outputVal to selected output module and returns input value from selected input module
 unsigned int ScanDigitalIOBank(int bankIndex, unsigned int outputVal)
 {
+// NOTE: This is just for SW SPI (delete when we feel OK with it)
   // Reset clock
-  digitalWrite(SCK_PIN, LOW);
+//  digitalWrite(SCK_PIN, LOW);
 
   // Pulse the LOAD pin (inputs) to store input states in shift registers
   digitalWrite(SLOAD_PIN, LOW); // Copy input states into shift register
@@ -157,21 +174,25 @@ unsigned int ScanDigitalIOBank(int bankIndex, unsigned int outputVal)
 
   // TODO: Consider using SPI library (might not handle clocks correctly for both inputs and outputs...out of phase?)
   unsigned int inputVal = 0;
-  for(int i = 0; i < MODULE_IO_WIDTH; i++) // Perform I/O for each bit in bank
-  {
+ 
+  inputVal = SPI.transfer(~outputVal);
 
-    byte bitVal = digitalRead(MISO_PIN); // Read bit from serial input
-    inputVal |= (bitVal << ((MODULE_IO_WIDTH - 1) - i)); // Set the corresponding bit in value byte (MSB)
-    digitalWrite(MOSI_PIN, ((outputVal >> ((MODULE_IO_WIDTH - 1) - i)) & 0x1) ? LOW : HIGH); // Invert bit (active LOW) and write to serial output
+  // NOTE: This is just for SW SPI (delete when we feel OK with it)
+  // for(int i = 0; i < MODULE_IO_WIDTH; i++) // Perform I/O for each bit in bank
+  // {
+
+  //   byte bitVal = digitalRead(MISO_PIN); // Read bit from serial input
+  //   inputVal |= (bitVal << ((MODULE_IO_WIDTH - 1) - i)); // Set the corresponding bit in value byte (MSB)
+  //   digitalWrite(MOSI_PIN, ((outputVal >> ((MODULE_IO_WIDTH - 1) - i)) & 0x1) ? LOW : HIGH); // Invert bit (active LOW) and write to serial output
     
-    // Pulse clock to advance shift registers
-    digitalWrite(SCK_PIN, HIGH);
-    delayMicroseconds(5); // TODO: Do we really need this? The datasheet says it only requires a 25ns pulse...
-    digitalWrite(SCK_PIN, LOW);
-  }
+  //   // Pulse clock to advance shift registers
+  //   digitalWrite(SCK_PIN, HIGH);
+  //   delayMicroseconds(5); // TODO: Do we really need this? The datasheet says it only requires a 25ns pulse...
+  //   digitalWrite(SCK_PIN, LOW);
+  // }
   
   // Reset BUS_ENABLE (stop shifting inputs) and STCP (latch outputs)
-  SelectDigitalIOBank(BANK_IDX_NONE);
+  SelectDigitalIOBank(BANK_NONE);
   
  return inputVal;
 }
