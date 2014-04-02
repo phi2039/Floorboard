@@ -17,6 +17,9 @@
 // I/O Scanning
 #define MODULE_IO_WIDTH  8 // Number of bits handled by each I/O module (so we can chain shift registers later, if we want to, for a wider IO range)
 
+#define RISING_EDGE  0
+#define FALLING_EDGE 1
+
 // Global Variables
 unsigned int g_DigitalInputStates[IO_BANK_COUNT];
 unsigned int g_DigitalOutputStates[IO_BANK_COUNT];
@@ -76,6 +79,8 @@ void _PrintOutputStates(int bank)
 }
 ///////////////////////////////////////////
 
+byte latch[IO_BANK_COUNT];
+
 void setup() 
 {
 #ifdef DEBUG_MON  
@@ -97,7 +102,7 @@ void setup()
   // SPI Bus
   SPI.setBitOrder(MSBFIRST);
   SPI.setDataMode(SPI_MODE0); // POL = 0 (rising edge), CPHA = 0 (first edge)
-  SPI.setClockDivider(SPI_CLOCK_DIV4); // System Clock / 4
+  SPI.setClockDivider(SPI_CLOCK_DIV4); // System Clock / 4 (4MHz on Arduino UNO)
   SPI.begin();
 
 // Initialize I/O Control
@@ -116,10 +121,13 @@ void setup()
   }
   
 // Set Default Hardware State
-  memset(g_DigitalInputStates, 0, sizeof(g_DigitalInputStates)); // Initialize all external inputs LOW
   memset(g_DigitalOutputStates, 0, sizeof(g_DigitalOutputStates)); // Initialize all external outputs LOW
   for (int bank = 0; bank < IO_BANK_COUNT; bank++)
     ScanDigitalIOBank(bank, g_DigitalOutputStates[bank]);
+  memset(g_DigitalInputStates, 0, sizeof(g_DigitalInputStates)); // Initialize all external inputs LOW
+
+
+  memset(latch, 0, sizeof(latch));
 }
 
 // I/O Module Handling ///////////////////////////////////////
@@ -140,7 +148,7 @@ void SelectDigitalIOBank(int moduleId)
     }
 }
 
-// Scans one bank of digital I/O (one input, oue output). Writes outputVal to selected output module and returns input value from selected input module
+// Scans one bank of digital I/O (one input module, one output module). Writes outputVal to selected output module and returns input value from selected input module
 unsigned int ScanDigitalIOBank(int bankIndex, unsigned int outputVal)
 {
   // Pulse the LOAD pin (inputs) to store input states in shift registers
@@ -151,11 +159,8 @@ unsigned int ScanDigitalIOBank(int bankIndex, unsigned int outputVal)
   // Set BUS_ENABLE LOW (inputs) and STCP LOW (outputs) for the desired modules
   SelectDigitalIOBank(bankIndex);
 
-  // TODO: Consider using SPI library (might not handle clocks correctly for both inputs and outputs...out of phase?)
-  unsigned int inputVal = 0;
-
   // Read/Write I/O
-  inputVal = SPI.transfer(~outputVal);
+  unsigned int inputVal = SPI.transfer(~outputVal);
   
   // Reset BUS_ENABLE (stop shifting inputs) and STCP (latch outputs)
   SelectDigitalIOBank(BANK_NONE);
@@ -163,6 +168,26 @@ unsigned int ScanDigitalIOBank(int bankIndex, unsigned int outputVal)
  return inputVal;
 }
 
+void OnDigitalInputChange(unsigned int bank, unsigned int index, byte type)
+{
+#ifdef DEBUG_MON
+  Serial.print("Input Change [bank ");
+  Serial.print(bank);
+  Serial.print(", index ");
+  Serial.print(index);
+  Serial.print("]: ");
+
+  if (type == RISING_EDGE)
+    Serial.print("RISING_EDGE");
+  else
+    Serial.print("FALLING_EDGE");
+
+  Serial.print("\r\n");  
+#endif
+
+  if (type == RISING_EDGE)
+    latch[bank] ^= (0x1 << index);
+}
 //////////////////////////////////////////////////////////////////////////////
 
 void loop() 
@@ -170,16 +195,31 @@ void loop()
   for (int bank = 0; bank < IO_BANK_COUNT; bank++)
   {
     unsigned int inputVal = ScanDigitalIOBank(bank, g_DigitalOutputStates[bank]);
-    if (g_DigitalInputStates[bank] != inputVal) // Detect change
+    unsigned int inputFlags = inputVal ^ g_DigitalInputStates[bank]; // Identify any changes in state
+    if (inputFlags) // Detect change
     {
+      unsigned int oldVal = g_DigitalInputStates[bank]; // Capture the previous state
       g_DigitalInputStates[bank] = inputVal; // Store new state
-      PrintInputStates(bank);
+
+      for (unsigned int i = 0; i < MODULE_IO_WIDTH; i++) // Check each input bit for changes
+      {
+        if (inputFlags & 0x1) // This bit changed
+        {
+          if ((oldVal >> i) & 0x1)
+            OnDigitalInputChange(bank, i, FALLING_EDGE);
+          else
+            OnDigitalInputChange(bank, i, RISING_EDGE);       
+        }
+        inputFlags >>= 1; // Shift right one bit
+      }
     }
 
-    if (g_DigitalOutputStates[bank] != g_DigitalInputStates[bank] >> 1) // Detect change
-    {
-      g_DigitalOutputStates[bank] = g_DigitalInputStates[bank] >> 1;  // Store new state
-      PrintOutputStates(bank);      
-    }
+    g_DigitalOutputStates[bank] = latch[bank] >> 1;
+// NOTE: This is just passthrough code to display input changes...
+//     if (g_DigitalOutputStates[bank] != g_DigitalInputStates[bank] >> 1) // Detect change
+//     {
+//       g_DigitalOutputStates[bank] = g_DigitalInputStates[bank] >> 1;  // Store new state
+// //      PrintOutputStates(bank);      
+//     }
   }
 }
