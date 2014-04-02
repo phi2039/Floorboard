@@ -3,7 +3,8 @@
 #define A0_PIN       5
 #define A1_PIN       6
 #define A2_PIN       7
-#define ADDR_EN_PIN  8 // Active low
+//#define A3_PIN       8 // Additional address bit to expand peripheral capabilities (e.g. LCD, more I/O, etc...)
+#define ADDR_EN_PIN  9 // Active low
 
 // SPI/Module Bus Definitions
 #define MOSI_PIN    11  // Master Out/Slave In
@@ -12,27 +13,18 @@
 #define SLOAD_PIN   10  // Serial Load (Inputs only)
 
 // External I/O Module Configuration
-#define BASE_INPUT_MODULE_ID   0
-#define MAX_INPUT_MODULES      4
-#define BASE_OUTPUT_MODULE_ID  4
-#define MAX_OUTPUT_MODULES     4
-#define MODULE_ID_NONE         0xFF
+#define IO_BANK_COUNT          4
+#define BANK_IDX_NONE         0xFF
 
-#define SCANMODE_INPUT 0x01
-#define SCANMODE_OUTPUT 0x02
-#define SCANMODE_BOTH  (SCANMODE_INPUT | SCANMODE_OUTPUT)
-
-#define MODULE_IO_WIDTH  8 // Bits handled by each I/O module (so we can chain shift registers later, if we want to)
-
-#define MODID_TO_INDEX(type, id) ((type == INPUT) ? (id - BASE_INPUT_MODULE_ID) : (id - BASE_OUTPUT_MODULE_ID))
-#define INDEX_TO_MODID(type, idx) ((type == INPUT) ? (idx + BASE_INPUT_MODULE_ID) : (idx + BASE_OUTPUT_MODULE_ID))
+// I/O Scanning
+#define MODULE_IO_WIDTH  8 // Number of bits handled by each I/O module (so we can chain shift registers later, if we want to, for a wider IO range)
 
 // Global Variables
-unsigned int g_DigitalInputStates[MAX_INPUT_MODULES];
-unsigned int g_DigitalOutputStates[MAX_OUTPUT_MODULES];
+unsigned int g_DigitalInputStates[IO_BANK_COUNT];
+unsigned int g_DigitalOutputStates[IO_BANK_COUNT];
 
 // Forward Declarations
-unsigned int ScanIOBank(int bankIndex, unsigned int outputVal, byte scanMode = SCANMODE_BOTH);
+unsigned int ScanDigitalIOBank(int bankIndex, unsigned int outputVal);
 
 //#define DEBUG_MON // Enables serial port monitoring of input/output state changes
 
@@ -88,8 +80,12 @@ void _PrintOutputStates(int bank)
 
 void setup() 
 {
-  Serial.begin(9600);   
-    
+#ifdef DEBUG_MON  
+  Serial.begin(9600); // Text output
+#else
+  Serial.begin(115200); // USB MIDI (Hairless bridge)
+#endif
+
 // Configure internal digital I/O pins
   // I/O Module Address Bus
   pinMode(A0_PIN, OUTPUT);
@@ -108,36 +104,31 @@ void setup()
   digitalWrite(MOSI_PIN, LOW);
   digitalWrite(SLOAD_PIN, HIGH);
 
-// TODO: Replace this with something more elegant...
-// Do something fun with the LEDs during initialization(flash them in a spinning loop) :-) 
+// Do something fun with the LEDs during initialization (flash them in a spinning loop) :-) 
+// TODO: Handle this more generically, since the configuration is variable (e.g. might not always have LEDs on these banks)
   for (int a = 0; a < 5; a++)
   {
     for (int i = 0; i < 5; i++)
     {
-      ScanIOBank(0, (0x10 >> i), SCANMODE_OUTPUT);
-      ScanIOBank(1, (0x01 << i), SCANMODE_OUTPUT);
-//      SetOutputByte(5, 0x10 >> i);
-//      SetOutputByte(4, 0x01 << i);
+      ScanDigitalIOBank(0, (0x10 >> i));
+      ScanDigitalIOBank(1, (0x01 << i));
       delay(50);
     }
   }
   
-// Set Default State
+// Set Default Hardware State
   memset(g_DigitalInputStates, 0, sizeof(g_DigitalInputStates)); // Initialize all external inputs LOW
   memset(g_DigitalOutputStates, 0, sizeof(g_DigitalOutputStates)); // Initialize all external outputs LOW
-
-// Initialize I/O Modules
-  // TODO: The state values have been initialized...just do an I/O scan...
-  for (int i = 0; i < MAX_OUTPUT_MODULES; i++)
-    SetOutputByte(MODID_TO_INDEX(OUTPUT,i),0);
+  for (int bank = 0; bank < IO_BANK_COUNT; bank++)
+    ScanDigitalIOBank(bank, g_DigitalOutputStates[bank]);
 }
 
 // I/O Module Handling ///////////////////////////////////////
-void SelectIOModule(int moduleId)
+void SelectDigitalIOBank(int moduleId)
 {
     // Disable demux output
     digitalWrite(ADDR_EN_PIN, HIGH);
-    if (moduleId != MODULE_ID_NONE) // If MODULE_ID_NONE is specified, disable all modules
+    if (moduleId != BANK_IDX_NONE) // If BANK_IDX_NONE is specified, disable all modules
     {
       // Write address bits
       // TODO: Is there a function to write all these at once?
@@ -150,34 +141,28 @@ void SelectIOModule(int moduleId)
     }
 }
 
-// Writes outputVal to selected bank and returns input value from selected bank
-unsigned int ScanIOBank(int bankIndex, unsigned int outputVal, byte scanMode /*= SCANMODE_BOTH*/)
+// Scans one bank of digital I/O (one input, oue output). Writes outputVal to selected output module and returns input value from selected input module
+unsigned int ScanDigitalIOBank(int bankIndex, unsigned int outputVal)
 {
   // Reset clock
   digitalWrite(SCK_PIN, LOW);
 
-  if (scanMode & SCANMODE_INPUT)
-  {
-    // Pulse the LOAD pin (inputs) to store input states
-    digitalWrite(SLOAD_PIN, LOW); // Copy input states into shift register
-    delayMicroseconds(5); // let the values settle in the shift register (TODO: Do we really need this? The datasheet says it only takes 15ns to load...)
-    digitalWrite(SLOAD_PIN, HIGH); // Reset latch pin (data has been captured)
-    SelectIOModule(INDEX_TO_MODID(INPUT, bankIndex)); // Take the input enable pin (Clock Inhibit) low (the address bus is active LOW) to enable shifting input states
-  }
+  // Pulse the LOAD pin (inputs) to store input states in shift registers
+  digitalWrite(SLOAD_PIN, LOW); // Copy input states into shift register
+  delayMicroseconds(5); // let the values settle in the shift register (TODO: Do we really need this? The datasheet says it only takes 15ns to load...)
+  digitalWrite(SLOAD_PIN, HIGH); // Reset latch pin (data has been captured)
   
+  // Set BUS_ENABLE LOW (inputs) and STCP LOW (outputs) for the desired modules
+  SelectDigitalIOBank(bankIndex);
+
+  // TODO: Consider using SPI library (might not handle clocks correctly for both inputs and outputs...out of phase?)
   unsigned int inputVal = 0;
   for(int i = 0; i < MODULE_IO_WIDTH; i++) // Perform I/O for each bit in bank
   {
-    if (scanMode & SCANMODE_INPUT)
-    {
-      byte bitVal = digitalRead(MISO_PIN); // Read bit from serial input
-      inputVal |= (bitVal << ((MODULE_IO_WIDTH - 1) - i)); // Set the corresponding bit in value byte (MSB)
-    }
 
-    if (scanMode & SCANMODE_OUTPUT)
-    {
-      digitalWrite(MOSI_PIN, ((outputVal >> ((MODULE_IO_WIDTH - 1) - i)) & 0x1) ? LOW : HIGH); // Invert bit (active LOW) and write to serial output
-    }
+    byte bitVal = digitalRead(MISO_PIN); // Read bit from serial input
+    inputVal |= (bitVal << ((MODULE_IO_WIDTH - 1) - i)); // Set the corresponding bit in value byte (MSB)
+    digitalWrite(MOSI_PIN, ((outputVal >> ((MODULE_IO_WIDTH - 1) - i)) & 0x1) ? LOW : HIGH); // Invert bit (active LOW) and write to serial output
     
     // Pulse clock to advance shift registers
     digitalWrite(SCK_PIN, HIGH);
@@ -185,19 +170,8 @@ unsigned int ScanIOBank(int bankIndex, unsigned int outputVal, byte scanMode /*=
     digitalWrite(SCK_PIN, LOW);
   }
   
-  if (scanMode & SCANMODE_INPUT)
-  {
-     // Reset (HIGH) the clock inhibit pin on input register to stop shifting
-     SelectIOModule(MODULE_ID_NONE);
-  }
-  
-  if (scanMode & SCANMODE_OUTPUT)
-  {
-     // Pulse the latch/load pin on output register to latch the last 8 bits shifted to the outputs...
-     SelectIOModule(INDEX_TO_MODID(OUTPUT, bankIndex)); // TODO: Can we just switch to the output module without going to NULL first?
-     delayMicroseconds(5); // TODO: Do we really need this? The datasheet says it only requires a 22ns pulse...
-     SelectIOModule(MODULE_ID_NONE);
-  }
+  // Reset BUS_ENABLE (stop shifting inputs) and STCP (latch outputs)
+  SelectDigitalIOBank(BANK_IDX_NONE);
   
  return inputVal;
 }
@@ -206,10 +180,9 @@ unsigned int ScanIOBank(int bankIndex, unsigned int outputVal, byte scanMode /*=
 
 void loop() 
 {
-  for (int bank = 0; bank < 2; bank++)
+  for (int bank = 0; bank < IO_BANK_COUNT; bank++)
   {
-    unsigned int inputVal = ScanIOBank(bank, g_DigitalOutputStates[bank]);
-  
+    unsigned int inputVal = ScanDigitalIOBank(bank, g_DigitalOutputStates[bank]);
     if (g_DigitalInputStates[bank] != inputVal) // Detect change
     {
       g_DigitalInputStates[bank] = inputVal; // Store new state
