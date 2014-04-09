@@ -1,3 +1,4 @@
+#include "BusControl.h"
 
 #define READ  0x02 // 10 00ABCD - 0x02 ADDR
 #define EWEN1 0x00 // 00 11XXXX
@@ -17,13 +18,12 @@
 #define PIN93C46  PINB
 #define PORT93C46 PORTB
 
-typedef void (*SelectSlavePtr)(unsigned int index);
 class SPI_93C46B
 {
 public:
-  SPI_93C46B(unsigned int slaveIndex, SelectSlavePtr ptr) :
-    SelectSlave(ptr),
-    m_SlaveIndex(slaveIndex)
+  SPI_93C46B(unsigned int busAddress, BusControl& busControl) :
+    m_BusControl(busControl),
+    m_BusAddress(busAddress)
   {      
   }
 
@@ -43,7 +43,7 @@ public:
     data = SPI.transfer(0);
     data = (data << 8) | (SPI.transfer(0));
     delayMicroseconds(1);
-    SelectSlave(0xFF);
+    m_BusControl.SelectSlave(0xFF);
     digitalWrite(11, LOW);
     SPCR &= ~(1 << CPHA);    
 
@@ -53,45 +53,45 @@ public:
   void EraseWriteEnable(void) 
   {
     Opcode(EWEN1, EWEN2);
-    SelectSlave(0xFF);
+    m_BusControl.SelectSlave(0xFF);
     digitalWrite(11, LOW);
     delayMicroseconds(0.1);
-    SelectSlave(m_SlaveIndex);
+    m_BusControl.SelectSlave(m_BusAddress);
     while(!(PIN93C46 & (1 << DO))); // Wait 1
-    SelectSlave(0xFF);
+    m_BusControl.SelectSlave(0xFF);
   }
   
   void EraseWriteDisable(void) 
   {
     Opcode(EWDS1, EWDS2);
-    SelectSlave(0xFF);
+    m_BusControl.SelectSlave(0xFF);
     digitalWrite(11, LOW);
     delayMicroseconds(0.1);
-    SelectSlave(m_SlaveIndex);
+    m_BusControl.SelectSlave(m_BusAddress);
     while(!(PIN93C46 & (1 << DO))); // Wait 1
-    SelectSlave(0xFF);
+    m_BusControl.SelectSlave(0xFF);
   }
   
   void Erase(uint8_t address) 
   {
     Opcode(ERASE, address);   
     digitalWrite(11, LOW);
-    SelectSlave(0xFF);
-    SelectSlave(m_SlaveIndex);
+    m_BusControl.SelectSlave(0xFF);
+    m_BusControl.SelectSlave(m_BusAddress);
     while(!(PIN93C46 & (1 << DO))); // Wait 1
     delayMicroseconds(0.1);
-    SelectSlave(0xFF);
+    m_BusControl.SelectSlave(0xFF);
   }
   
   void EraseAll(void) 
   {
     Opcode(ERAL1, ERAL2);   
     digitalWrite(11, LOW);
-    SelectSlave(0xFF);
-    SelectSlave(m_SlaveIndex);
+    m_BusControl.SelectSlave(0xFF);
+    m_BusControl.SelectSlave(m_BusAddress);
     while(!(PIN93C46 & (1 << DO))); // Wait 1
     delayMicroseconds(0.1);
-    SelectSlave(0xFF);
+    m_BusControl.SelectSlave(0xFF);
   }
   
   void Write(uint8_t address, uint16_t data) 
@@ -101,11 +101,11 @@ public:
     SPI.transfer(data & 0xFF);          // Write data low byte to address
 
     digitalWrite(11, LOW);
-    SelectSlave(0xFF);
-    SelectSlave(m_SlaveIndex);
+    m_BusControl.SelectSlave(0xFF);
+    m_BusControl.SelectSlave(m_BusAddress);
     delayMicroseconds(0.1);
     while(!(PIN93C46 & (1 << DO))); // Wait "1"
-    SelectSlave(0xFF);
+    m_BusControl.SelectSlave(0xFF);
   }
   
   void WriteAll(uint16_t data) 
@@ -115,17 +115,17 @@ public:
     SPI.transfer(data & 0xFF);          // Write data low byte to address
 
     digitalWrite(11, LOW);
-    SelectSlave(0xFF);
-    SelectSlave(m_SlaveIndex);
+    m_BusControl.SelectSlave(0xFF);
+    m_BusControl.SelectSlave(m_BusAddress);
     delayMicroseconds(0.1);
     while(!(PIN93C46 & (1 << DO))); // Wait "1"
-    SelectSlave(0xFF);
+    m_BusControl.SelectSlave(0xFF);
   }
 
 private:
   void Opcode(uint8_t opcode, uint8_t address) 
   {
-    SelectSlave(m_SlaveIndex);
+    m_BusControl.SelectSlave(m_BusAddress);
 
     // Take manual control to send the start bit
     SPCR &= ~(1 << SPE);               // SPI disable
@@ -142,6 +142,6 @@ private:
     SPI.transfer((opcode << 6) | address); // Transmit byte
   }
 
-  SelectSlavePtr SelectSlave;
-  unsigned int m_SlaveIndex;
+  BusControl& m_BusControl;
+  unsigned int m_BusAddress;
 };

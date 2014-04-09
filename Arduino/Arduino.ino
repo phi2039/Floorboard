@@ -1,6 +1,11 @@
 
 #include <SPI.h>
+#include <LCD.h>
+#include <Time.h>
+
 #include "93L46B.h"
+#include "BusControl.h"
+#include "LiquidCrystal_CAL.h"
 
 // Address Bus Definitions
 // There are two registers (LOW/HIGH)
@@ -8,18 +13,20 @@
 // Each bank consists of one input module and one output module (creating a single, virtual I/O device)
 // Other peripherals are attached to the HIGH register (addresses 8-15)
 // All SPI devices share the same serial bus (MOSI, MISO, SCK)
-#define A0_PIN       2
-#define A1_PIN       3
-#define A2_PIN       4
-#define A3_PIN       5 // Bank Select 
+#define ADDR0_PIN       2
+#define ADDR1_PIN       3 
+#define ADDR2_PIN       4
+#define ADDR3_PIN       5 // Register Select 
 #define ADDR_EN_PIN  9 // Active LOW
 
 // I/O Control Definitions
 #define SLOAD_PIN   10  // Serial Load (Inputs only)
 
 // External I/O Module Configuration
-#define IO_BANK_COUNT     4
-#define SLAVE_NONE         0xFF
+#define IO_BANK_COUNT       2 // MAX 8
+//#define SLAVE_NONE          0xFF
+#define ANALOG_INTPUT_COUNT 2
+#define ANALOG_SENSITIVIY   3
 
 // I/O Scanning
 #define MODULE_IO_WIDTH  8 // Number of bits handled by each I/O module (so we can chain shift registers later, if we want to, for a wider I/O range)
@@ -28,18 +35,19 @@
 #define FALLING_EDGE 1
 
 // Forward Declarations
-unsigned int ScanDigitalIOBank(int bankIndex, unsigned int outputVal);
-void SelectSPISlave(unsigned int index);
+unsigned int ScanIOBank(int bankIndex, unsigned int outputVal, int* pAnalogInputValue = NULL);
 
 // Global Variables
 unsigned int g_DigitalInputStates[IO_BANK_COUNT];
 unsigned int g_DigitalOutputStates[IO_BANK_COUNT];
 unsigned int g_ActiveSPISlave;
-
-SPI_93C46B g_EEPROM(8, SelectSPISlave);
+unsigned int g_AnalogInputStates[ANALOG_INTPUT_COUNT];
+int g_AddressPins[] = {ADDR0_PIN,ADDR1_PIN,ADDR2_PIN,ADDR3_PIN}; // 4-bit addressing
+BusControl g_BusControl(g_AddressPins, 4, ADDR_EN_PIN);
+LiquidCrystal_CAL g_LCD(g_BusControl, 9);
 
 #define DEBUG_MON // Enables serial port monitoring of input/output state changes
-
+ 
 // Utility Functions ///////////////////////
 #ifdef DEBUG_MON
   #define PrintInputStates(b) _PrintInputStates(b)
@@ -120,9 +128,9 @@ void _PrintBuffer(uint16_t* pBuf, unsigned int len)
 }
 ///////////////////////////////////////////
 
-// DUMMY VARIABLES FOR TESTING ///////////////////////////////////////////
+// DUMMY VARIABLES/FUNCTIONS FOR TESTING ///////////////////////////////////////////
 byte latch[IO_BANK_COUNT];
-uint16_t eeprom_data[4];
+
 //////////////////////////////////////////////////////////////////////////
 
 void setup() 
@@ -135,14 +143,17 @@ void setup()
 
 // Configure internal digital I/O pins
   // I/O Module Address Bus
-  pinMode(A0_PIN, OUTPUT);
-  pinMode(A1_PIN, OUTPUT);
-  pinMode(A2_PIN, OUTPUT);    
-  pinMode(A3_PIN, OUTPUT);    
+  pinMode(ADDR0_PIN, OUTPUT);
+  pinMode(ADDR1_PIN, OUTPUT);
+  pinMode(ADDR2_PIN, OUTPUT);    
+  pinMode(ADDR3_PIN, OUTPUT);    
   pinMode(ADDR_EN_PIN, OUTPUT);
   
   // I/O Control
   pinMode(SLOAD_PIN, OUTPUT);
+
+  // Analog I/O
+  pinMode(A0, INPUT);
 
   // SPI Bus
   SPI.setBitOrder(MSBFIRST);
@@ -159,8 +170,8 @@ void setup()
   {
     for (int i = 0; i < 5; i++)
     {
-      ScanDigitalIOBank(0, (0x10 >> i));
-      ScanDigitalIOBank(1, (0x01 << i));
+      ScanIOBank(0, (0x10 >> i));
+      ScanIOBank(1, (0x01 << i));
       delay(50);
     }
   }
@@ -168,16 +179,24 @@ void setup()
 // Set Default Hardware State
   g_ActiveSPISlave = 0xFF;
   memset(g_DigitalOutputStates, 0, sizeof(g_DigitalOutputStates)); // Initialize all external outputs LOW
-  for (int bank = 0; bank < IO_BANK_COUNT; bank++)
-    ScanDigitalIOBank(bank, g_DigitalOutputStates[bank]);
+  for (int bank = 0; bank < IO_BANK_COUNT; bank++) // Set output states
+    ScanIOBank(bank, g_DigitalOutputStates[bank]);
   memset(g_DigitalInputStates, 0, sizeof(g_DigitalInputStates)); // Initialize all external inputs LOW
+
+// Initialize LCD
+g_LCD.begin(40,2);               // initialize the lcd
+
+g_LCD.home ();                   // go home
+g_LCD.print("LiquidCrystal_CALifragilistic");
+
 
 // TEMP TESTING STUFF TO CLEAN UP LATER
   memset(latch, 0, sizeof(latch));
-  memset(eeprom_data, 0, sizeof(eeprom_data));
- }
+}
 
 // Persistent Storage Handling ///////////////////////////////////////
+
+SPI_93C46B g_EEPROM(8, g_BusControl);
 void WriteEEPROM(uint8_t address, uint16_t val)
 {
   g_EEPROM.EraseWriteEnable();
@@ -238,67 +257,27 @@ void DumpEEPROM()
     PrintBuffer(data, 4);
   }
 }
+///////////////////////////////////////////////////////////////////////////
 
-//////////////////////////////////////////////////////////////////////
+// Event Handling /////////////////////////////////////////////////////////
 
-// SPI Bus Selection ///////////////////////////////////////
-void SelectSPISlave(unsigned int address)
+void OnAnalogInputChange(int index, int newValue, int oldValue)
 {
-  // See if this slave is already active (don't change it if it's already active)
-  if (address != g_ActiveSPISlave)
-  {
-    // Disable demux output
-    digitalWrite(ADDR_EN_PIN, HIGH);
-    if (address != SLAVE_NONE) // If BANK_IDX_NONE is specified, disable all modules
-    {
-      // Write address bits
-      // TODO: Is there a function to write all these at once? Ports...
-      digitalWrite(A0_PIN, (address & 0x1) ? HIGH : LOW);
-      digitalWrite(A1_PIN, (address & 0x2) ? HIGH : LOW);
-      digitalWrite(A2_PIN, (address & 0x4) ? HIGH : LOW);
-      digitalWrite(A3_PIN, (address & 0x8) ? HIGH : LOW);
-      
-      // Enable demux output(s)
-      digitalWrite(ADDR_EN_PIN, LOW);
-    }
-    g_ActiveSPISlave = address; // Store the address
-  }  
-}
-//////////////////////////////////////////////////////////////////////////////
-
-// I/O Module Handling ///////////////////////////////////////
-void SelectDigitalIOBank(unsigned int bank)
-{
-  SelectSPISlave(bank & 0x7); // Mask out register bit (A3) (TODO: Does this mask make any sense...?)
-}
-
-// Scans one bank of digital I/O (one input module, one output module). Writes outputVal to selected output module and returns input value from selected input module
-unsigned int ScanDigitalIOBank(int bankIndex, unsigned int outputVal)
-{
-  // Make sure the SPI flags are set how we want them for these devices
-   SPI.setDataMode(SPI_MODE0); // POL = 0 (rising edge), CPHA = 0 (first edge)
-
- // Pulse the LOAD pin (inputs) to store input states in shift registers
-  digitalWrite(SLOAD_PIN, LOW); // Copy input states into shift register
-  delayMicroseconds(5); // let the values settle in the shift register (TODO: Do we really need this? The datasheet says it only takes 15ns to load...)
-  digitalWrite(SLOAD_PIN, HIGH); // Reset latch pin (data has been captured)
-  
-  // Set BUS_ENABLE LOW (inputs) and STCP LOW (outputs) for the desired modules
-  SelectDigitalIOBank(bankIndex);
-
-  // Read/Write I/O
-  unsigned int inputVal = SPI.transfer(~outputVal);
-  
-  // Reset BUS_ENABLE (stop shifting inputs) and STCP (latch outputs)
-  SelectDigitalIOBank(SLAVE_NONE);
-  
- return inputVal;
+#ifdef DEBUG_MON
+  Serial.print("Analog Input Change [index ");
+  Serial.print(index);
+  Serial.print("]: ");
+  Serial.print(oldValue);
+  Serial.print(" -> ");
+  Serial.print(newValue);
+  Serial.print("\r\n");  
+#endif
 }
 
 void OnDigitalInputChange(unsigned int bank, unsigned int index, byte type)
 {
 #ifdef DEBUG_MON
-  Serial.print("Input Change [bank ");
+  Serial.print("Digital Input Change [bank ");
   Serial.print(bank);
   Serial.print(", index ");
   Serial.print(index);
@@ -309,7 +288,7 @@ void OnDigitalInputChange(unsigned int bank, unsigned int index, byte type)
   else
     Serial.print("FALLING_EDGE");
 
-  Serial.print("\r\n");  
+  Serial.print("\r\n");
 #endif
 
   if (type == RISING_EDGE)
@@ -317,16 +296,50 @@ void OnDigitalInputChange(unsigned int bank, unsigned int index, byte type)
 }
 //////////////////////////////////////////////////////////////////////////////
 
+// I/O Scanning /////////////////////////////////////////////////////////
+
+// TODO: Analog output??
+// Scans one bank of I/O (one digital input module, one digital output module, and one analog input). Writes outputVal to selected output module and returns input value from selected input module
+unsigned int ScanIOBank(int bankIndex, unsigned int outputVal, int* pAnalogInputValue /*= NULL*/)
+{
+  // Pulse the LOAD pin (inputs) to store input states in shift registers
+  digitalWrite(SLOAD_PIN, LOW); // Copy input states into shift register
+  delayMicroseconds(5); // let the values settle in the shift register (TODO: Do we really need this? The datasheet says it only takes 15ns to load...)
+  digitalWrite(SLOAD_PIN, HIGH); // Reset latch pin (data has been captured)
+  
+  // Set BUS_ENABLE LOW (inputs) and STCP LOW (outputs) for the desired modules
+  g_BusControl.SelectSlave(bankIndex);
+
+  // Read/Write Digital I/O
+  unsigned int inputVal = SPI.transfer(~outputVal);
+  
+  // Read Analog Input
+  if (pAnalogInputValue)
+    *pAnalogInputValue = map(analogRead(0),39,945,0, 127);
+
+  // Reset BUS_ENABLE (stop shifting inputs) and STCP (latch outputs)
+  g_BusControl.SelectSlave(BUS_SLAVE_NONE);
+
+ return inputVal;
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+int printCounter = 0;
 void loop() 
 {
   for (int bank = 0; bank < IO_BANK_COUNT; bank++)
   {
-    unsigned int inputVal = ScanDigitalIOBank(bank, g_DigitalOutputStates[bank]);
-    unsigned int inputFlags = inputVal ^ g_DigitalInputStates[bank]; // Identify any changes in state
-    if (inputFlags) // Detect change
+    // Scan/Update Analog/Digital I/O
+    int analogInputVal = 0;
+    unsigned int digInputVal = ScanIOBank(bank, g_DigitalOutputStates[bank], &analogInputVal);
+
+    // Detect and handle any changes in digital states
+    unsigned int inputFlags = digInputVal ^ g_DigitalInputStates[bank]; 
+    if (inputFlags) // Detect digital input changes
     {
       unsigned int oldVal = g_DigitalInputStates[bank]; // Capture the previous state
-      g_DigitalInputStates[bank] = inputVal; // Store new state
+      g_DigitalInputStates[bank] = digInputVal; // Store new state
 
       for (unsigned int i = 0; i < MODULE_IO_WIDTH; i++) // Check each input bit for changes
       {
@@ -340,13 +353,16 @@ void loop()
         inputFlags >>= 1; // Shift right one bit
       }
     }
+    
+    // Detect and handle analog input changes
+    if (abs(analogInputVal - g_AnalogInputStates[bank]) >= ANALOG_SENSITIVIY)
+    {
+      OnAnalogInputChange(bank, analogInputVal, g_AnalogInputStates[bank]);
+      g_AnalogInputStates[bank] = analogInputVal;
+    }
 
+    // Dummy output handling
     g_DigitalOutputStates[bank] = latch[bank] >> 1;
-// NOTE: This is just passthrough code to display input changes...
-//     if (g_DigitalOutputStates[bank] != g_DigitalInputStates[bank] >> 1) // Detect change
-//     {
-//       g_DigitalOutputStates[bank] = g_DigitalInputStates[bank] >> 1;  // Store new state
-// //      PrintOutputStates(bank);      
-//     }
   }
+  g_LCD.PrintClock(1,0);
 }
