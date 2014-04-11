@@ -92,7 +92,7 @@ void LiquidCrystal_CAL::shiftIt(uint8_t val)
   SPI.transfer(val);
    
   // LCD ENABLE PULSE
-  m_BusControl.SelectSlave(0xFF);
+  m_BusControl.SelectSlave(BUS_SLAVE_NONE);
 }
 
 // PUBLIC METHODS

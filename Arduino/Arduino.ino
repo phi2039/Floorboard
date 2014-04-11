@@ -6,6 +6,7 @@
 #include "93L46B.h"
 #include "BusControl.h"
 #include "LiquidCrystal_CAL.h"
+#include "MAX3100.h"
 
 // Address Bus Definitions
 // There are two registers (LOW/HIGH)
@@ -183,6 +184,24 @@ void setup()
     ScanIOBank(bank, g_DigitalOutputStates[bank]);
   memset(g_DigitalInputStates, 0, sizeof(g_DigitalInputStates)); // Initialize all external inputs LOW
 
+// External device initialization
+// Initialize the external UART
+uint16_t uartConfig =   BAUD_DIV_8 \
+                  | WORD_LEN_8 \ 
+                  | PARITY_OFF \ 
+                  | STOP_BITS_1 \
+                  | IRDA_DISABLE \ 
+                  | IRQ_RA_OFF \
+                  | IRQ_PARITY_OFF \ 
+                  | IRQ_RXDATA_OFF \ 
+                  | IRQ_TXEMPTY_OFF \
+                  | SHUTDOWN_DISABLE \
+                  | FIFO_ENABLE \
+                  | RW_MODE_WRITE \
+                  | MSG_MODE_CONFIG;
+MAX3100_ConfigureUART(g_BusControl, 10, uartConfig);
+int baudRate = 4000000 / (16 * (0x1 << (uartConfig & 0x7)));
+
 // Initialize LCD
 g_LCD.begin(40,2);               // initialize the lcd
 
@@ -259,6 +278,21 @@ void DumpEEPROM()
 }
 ///////////////////////////////////////////////////////////////////////////
 
+// MIDI Handling /////////////////////////////////////////////////////////
+
+//  plays a MIDI note.  Doesn't check to see that
+//  cmd is greater than 127, or that data values are less than 127:
+void noteOn(int cmd, int pitch, int velocity) 
+{
+  MAX3100_SendReceiveData(g_BusControl, 10, cmd, NULL, false);
+  delay(1); // Delay more than 705 microsecs to allow transfer to complete
+  MAX3100_SendReceiveData(g_BusControl, 10, pitch, NULL, false);
+  delay(1); // Delay more than 705 microsecs to allow transfer to complete
+  MAX3100_SendReceiveData(g_BusControl, 10, velocity, NULL, false);
+  delay(1); // Delay more than 705 microsecs to allow transfer to complete
+}
+///////////////////////////////////////////////////////////////////////////
+
 // Event Handling /////////////////////////////////////////////////////////
 
 void OnAnalogInputChange(int index, int newValue, int oldValue)
@@ -284,14 +318,29 @@ void OnDigitalInputChange(unsigned int bank, unsigned int index, byte type)
   Serial.print("]: ");
 
   if (type == RISING_EDGE)
+  {
     Serial.print("RISING_EDGE");
+  }
   else
+  {
     Serial.print("FALLING_EDGE");
+  }
 
   Serial.print("\r\n");
 #endif
 
   if (type == RISING_EDGE)
+  {
+    noteOn(0x90, 0x2E + (6-index) + (bank*6), 0x45);
+  }
+  else
+  {
+    noteOn(0x90, 0x2E + (6-index) + (bank*6), 0x00);
+  }
+
+  if (type == RISING_EDGE)
+    latch[bank] ^= (0x1 << index);
+  else
     latch[bank] ^= (0x1 << index);
 }
 //////////////////////////////////////////////////////////////////////////////
@@ -323,11 +372,22 @@ unsigned int ScanIOBank(int bankIndex, unsigned int outputVal, int* pAnalogInput
  return inputVal;
 }
 
-//////////////////////////////////////////////////////////////////////////
-
 int printCounter = 0;
 void loop() 
 {
+  // // play notes from F#-0 (0x1E) to F#-5 (0x5A):
+  // for (int note = 0x1E; note < 0x5A; note ++) 
+  // {
+  //   //Note on channel 1 (0x90), some note value (note), middle velocity (0x45):
+  //   noteOn(0x90, note, 0x45);
+  //   delay(100);
+  //   //Note on channel 1 (0x90), some note value (note), silent velocity (0x00):
+  //   noteOn(0x90, note, 0x00);   
+  //   delay(100);
+  // }
+  // g_LCD.PrintClock(1,0);
+  // return;
+
   for (int bank = 0; bank < IO_BANK_COUNT; bank++)
   {
     // Scan/Update Analog/Digital I/O
@@ -360,6 +420,9 @@ void loop()
       OnAnalogInputChange(bank, analogInputVal, g_AnalogInputStates[bank]);
       g_AnalogInputStates[bank] = analogInputVal;
     }
+
+    // TODO: Process UART (MIDI) queues
+    // Should we try and use IRQ's for this??
 
     // Dummy output handling
     g_DigitalOutputStates[bank] = latch[bank] >> 1;
