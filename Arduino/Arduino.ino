@@ -13,7 +13,7 @@
 // Digital I/O Modules are arranged in "banks" attached to the LOW register (addresses 0-7)
 // Each bank consists of one input module and one output module (creating a single, virtual I/O device)
 // Other peripherals are attached to the HIGH register (addresses 8-15)
-// All SPI devices share the same serial bus (MOSI, MISO, SCK)
+// All SPI devices share the same serial bus (MOSI[11], MISO[12], SCK[13])
 #define ADDR0_PIN       2
 #define ADDR1_PIN       3 
 #define ADDR2_PIN       4
@@ -25,7 +25,7 @@
 
 // External I/O Module Configuration
 #define IO_BANK_COUNT       2 // MAX 8
-//#define SLAVE_NONE          0xFF
+#define ANALOG_INPUT_PIN    0
 #define ANALOG_INTPUT_COUNT 2
 #define ANALOG_SENSITIVIY   3
 
@@ -364,7 +364,7 @@ unsigned int ScanIOBank(int bankIndex, unsigned int outputVal, int* pAnalogInput
   
   // Read Analog Input
   if (pAnalogInputValue)
-    *pAnalogInputValue = map(analogRead(0),39,945,0, 127);
+    *pAnalogInputValue = map(analogRead(ANALOG_INPUT_PIN),39,945,0, 127);
 
   // Reset BUS_ENABLE (stop shifting inputs) and STCP (latch outputs)
   g_BusControl.SelectSlave(BUS_SLAVE_NONE);
@@ -375,19 +375,6 @@ unsigned int ScanIOBank(int bankIndex, unsigned int outputVal, int* pAnalogInput
 int printCounter = 0;
 void loop() 
 {
-  // // play notes from F#-0 (0x1E) to F#-5 (0x5A):
-  // for (int note = 0x1E; note < 0x5A; note ++) 
-  // {
-  //   //Note on channel 1 (0x90), some note value (note), middle velocity (0x45):
-  //   noteOn(0x90, note, 0x45);
-  //   delay(100);
-  //   //Note on channel 1 (0x90), some note value (note), silent velocity (0x00):
-  //   noteOn(0x90, note, 0x00);   
-  //   delay(100);
-  // }
-  // g_LCD.PrintClock(1,0);
-  // return;
-
   for (int bank = 0; bank < IO_BANK_COUNT; bank++)
   {
     // Scan/Update Analog/Digital I/O
