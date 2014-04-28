@@ -313,6 +313,26 @@ X ~ 2 0 -200 170 U 40 40 1 1 P
 ENDDRAW
 ENDDEF
 #
+# Capacitor-Mini
+#
+DEF ~Capacitor-Mini C 0 10 N Y 1 F N
+F0 "C" 20 50 25 H V L CNN
+F1 "Capacitor-Mini" -250 -140 50 H I L CNN
+F2 "" 0 0 60 H V C CNN
+F3 "" 0 0 60 H V C CNN
+$FPLIST
+ SM*
+ C?
+ C1-1
+$ENDFPLIST
+DRAW
+P 2 0 1 20  -50 -20  50 -20 N
+P 2 0 1 20  -50 20  50 20 N
+X ~ 1 0 100 70 D 40 40 1 1 P
+X ~ 2 0 -100 70 U 40 40 1 1 P
+ENDDRAW
+ENDDEF
+#
 # Capacitor-Polarized_EN60617-4_04-02-05_Date20121108
 #
 DEF ~Capacitor-Polarized_EN60617-4_04-02-05_Date20121108 C 0 10 N Y 1 F N
